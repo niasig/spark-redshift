@@ -1,0 +1,45 @@
+{
+  "linters": {
+    "java": {
+      "type": "script-and-regex",
+      "include": "(\\.java$)",
+      "script-and-regex.script": "$CLEAN_CODE_DIR/run-checkstyle.sh ",
+      "script-and-regex.regex": "/^(.*)java:(?P<line>\\d+):(\\d+:)?(?P<message>.*)$/m"
+    },
+    "scala": {
+      "type": "script-and-regex",
+      "include": "(\\.scala$)",
+      "script-and-regex.script": "$CLEAN_CODE_DIR/scala/run-scalastyle.sh ",
+      "script-and-regex.regex": "/^(?P<severity>.*) file=(?P<file>.*) message=(?P<message>.*) line=(?P<line>\\d+) column=(?P<char>\\d+)$/m"
+    },
+    "python": {
+      "type": "pep8",
+      "bin" : "pycodestyle",
+      "include": "(\\.py$)",
+      "flags": ["--max-line-length=120"],
+      "severity": {
+        "E116": "disabled",
+        "E201": "disabled",
+        "E202": "disabled",
+        "E203": "disabled",
+        "E211": "disabled",
+        "E221": "disabled",
+        "E266": "disabled",
+        "E271": "disabled",
+        "E272": "disabled",
+        "E302": "disabled",
+        "E303": "disabled",
+        "E402": "disabled",
+        "E701": "disabled",
+        "E702": "disabled",
+        "W503": "disabled"
+      }
+    },
+    "protobuf": {
+      "type": "script-and-regex",
+      "include": "(\\.proto$)",
+      "script-and-regex.script": "$CLEAN_CODE_DIR/protobuf/run-protoc-gen-lint.sh",
+      "script-and-regex.regex": "/^(.*)proto:(?P<line>\\d+):(?P<char>\\d+:)?(?P<message>.*)$/m"
+    }
+  }
+}
