@@ -67,8 +67,15 @@ private[redshift] class RedshiftWriter(
    * Generate CREATE TABLE statement for Redshift
    */
   // Visible for testing.
-  private[redshift] def createTableSql(data: DataFrame, params: MergedParameters): String = {
+  private[redshift] def createTableSql(data: DataFrame,
+                                       params: MergedParameters,
+                                       table: TableName): String = {
     val schemaSql = jdbcWrapper.schemaString(data.schema)
+
+    val primaryKeyDef = params.primaryKey
+      .map(primaryKey => s"PRIMARY KEY($primaryKey)")
+      .getOrElse("")
+
     val distStyleDef = params.distStyle match {
       case Some(style) => s"DISTSTYLE $style"
       case None => ""
@@ -78,17 +85,37 @@ private[redshift] class RedshiftWriter(
       case None => ""
     }
     val sortKeyDef = params.sortKeySpec.getOrElse("")
-    val table = params.table.get
-
-    s"CREATE TABLE IF NOT EXISTS $table ($schemaSql) $distStyleDef $distKeyDef $sortKeyDef"
+    s"CREATE TABLE IF NOT EXISTS $table ($schemaSql) " +
+      s"$primaryKeyDef $distStyleDef $distKeyDef $sortKeyDef "
   }
 
+  private[redshift] def dropTableSql(table: TableName): String = {
+    s"DROP TABLE IF EXISTS $table"
+  }
+
+  private[redshift] def deleteExistingSql(params: MergedParameters): String = {
+    val table = params.table.get
+    val stagingTable = params.stagingTable.get
+    val whereClause = params.primaryKey.get
+      .split(",")
+      .map(key => s"$table.$key = $stagingTable.$key").mkString(" AND ")
+
+    s"DELETE from $table USING $stagingTable WHERE $whereClause"
+  }
+
+  private[redshift] def insertSql(params: MergedParameters): String = {
+    val table = params.table.get
+    val stagingTable = params.stagingTable.get
+    val selectAllStaging = s"(SELECT * FROM $stagingTable)"
+    s"INSERT INTO $table $selectAllStaging"
+  }
   /**
    * Generate the COPY SQL command
    */
   private def copySql(
       sqlContext: SQLContext,
       params: MergedParameters,
+      table: TableName,
       creds: AWSCredentialsProvider,
       manifestUrl: String): String = {
     val credsString: String =
@@ -98,8 +125,8 @@ private[redshift] class RedshiftWriter(
       case "AVRO" => "AVRO 'auto'"
       case csv if csv == "CSV" || csv == "CSV GZIP" => csv + s" NULL AS '${params.nullString}'"
     }
-    s"COPY ${params.table.get} FROM '$fixedUrl' CREDENTIALS '$credsString' FORMAT AS " +
-      s"${format} manifest ${params.extraCopyOptions}"
+    s"COPY $table FROM '$fixedUrl' CREDENTIALS '$credsString' FORMAT AS " +
+      s"$format manifest ${params.extraCopyOptions}"
   }
 
   /**
@@ -124,10 +151,19 @@ private[redshift] class RedshiftWriter(
       creds: AWSCredentialsProvider,
       manifestUrl: Option[String]): Unit = {
 
-    // If the table doesn't exist, we need to create it first, using JDBC to infer column types
-    val createStatement = createTableSql(data, params)
-    log.info(createStatement)
-    jdbcWrapper.executeInterruptibly(conn.prepareStatement(createStatement))
+    // Create staging table. (Need to do a drop table before too)
+    val dropStagingStatement = dropTableSql(params.stagingTable.get)
+    jdbcWrapper.executeInterruptibly(conn.prepareStatement(dropStagingStatement))
+
+    // If the table doesn't exist, we need to create it first, using JDBC to infer column types.
+    val createStagingStatement = createTableSql(data, params, params.stagingTable.get)
+    log.info(createStagingStatement)
+    jdbcWrapper.executeInterruptibly(conn.prepareStatement(createStagingStatement))
+
+    // Create prod table
+    val createProdStatement = createTableSql(data, params, params.table.get)
+    log.info(createProdStatement)
+    jdbcWrapper.executeInterruptibly(conn.prepareStatement(createProdStatement))
 
     val preActions = commentActions(params.description, data.schema) ++ params.preActions
 
@@ -140,10 +176,24 @@ private[redshift] class RedshiftWriter(
 
     manifestUrl.foreach { manifestUrl =>
       // Load the temporary data into the new file
-      val copyStatement = copySql(data.sqlContext, params, creds, manifestUrl)
-      log.info(copyStatement)
+      val copyToStagingStatement = copySql(data.sqlContext, params, params.stagingTable.get, creds, manifestUrl)
+      log.info(copyToStagingStatement)
+
       try {
-        jdbcWrapper.executeInterruptibly(conn.prepareStatement(copyStatement))
+        jdbcWrapper.executeInterruptibly(conn.prepareStatement(copyToStagingStatement))
+
+        val deleteExistingRowsStatement = deleteExistingSql(params)
+        log.info(deleteExistingRowsStatement)
+        jdbcWrapper.executeInterruptibly(conn.prepareStatement(deleteExistingRowsStatement))
+
+
+        val insertNewRowsStatement = insertSql(params)
+        log.info(insertNewRowsStatement)
+        jdbcWrapper.executeInterruptibly(conn.prepareStatement(insertNewRowsStatement))
+
+        val dropStagingStatement = dropTableSql(params.stagingTable.get)
+        jdbcWrapper.executeInterruptibly(conn.prepareStatement(dropStagingStatement))
+
       } catch {
         case e: SQLException =>
           log.error("SQLException thrown while running COPY query; will attempt to retrieve " +

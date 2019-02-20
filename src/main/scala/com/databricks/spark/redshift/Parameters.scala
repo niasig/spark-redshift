@@ -16,6 +16,8 @@
 
 package com.databricks.spark.redshift
 
+import java.time.Instant
+
 import com.amazonaws.auth.{AWSCredentialsProvider, BasicSessionCredentials}
 
 /**
@@ -138,6 +140,21 @@ private[redshift] object Parameters {
         Some(TableName.parseFromEscaped(dbtable))
       }
     }
+
+    def stagingTable: Option[TableName] = parameters.get("dbtable").map(_.trim).flatMap { dbtable =>
+      // We technically allow queries to be passed using `dbtable` as long as they are wrapped
+      // in parentheses. Valid SQL identifiers may contain parentheses but cannot begin with them,
+      // so there is no ambiguity in ignoring subqeries here and leaving their handling up to
+      // the `query` function defined below.
+      if (dbtable.startsWith("(") && dbtable.endsWith(")")) {
+        None
+      } else {
+        Some(TableName.parseFromEscaped(s"${dbtable}_staging_${Instant.now.getEpochSecond}"))
+      }
+    }
+
+    def primaryKey: Option[String] = parameters.get("primarykey").map(pk =>
+      '"' + pk.trim.replace("\"", "\"\"") + '"')
 
     /**
      * The Redshift query to be used as the target when loading data.

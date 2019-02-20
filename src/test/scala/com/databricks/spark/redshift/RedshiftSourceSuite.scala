@@ -71,6 +71,7 @@ class RedshiftSourceSuite
     "url" -> "jdbc:redshift://foo/bar?user=user&password=password",
     "tempdir" -> s3TempDir,
     "dbtable" -> "test_table",
+    "primarykey" -> "teststring",
     "forward_spark_s3_credentials" -> "true")
 
   override def beforeAll(): Unit = {
@@ -321,11 +322,20 @@ class RedshiftSourceSuite
 
     val expectedCommands = Seq(
       "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
+      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
       "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
       "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id < 100".r,
       "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id > 100".r,
       "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id = -1".r,
-      "COPY \"PUBLIC\".\"test_table.*\"".r)
+      "COPY \"PUBLIC\".\"test_table_staging.*\"".r,
+      ("DELETE from \"PUBLIC\".\"test_table\" USING \"PUBLIC\".\"test_table_staging.*\"" +
+        " WHERE \"PUBLIC\".\"test_table\".\"teststring\" =" +
+        " \"PUBLIC\".\"test_table_staging.*\".\"teststring\"").r,
+      ("INSERT INTO \"PUBLIC\".\"test_table\"" +
+        " \\(SELECT \\* FROM \"PUBLIC\".\"test_table_staging.*\"\\)").r,
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r)
+
 
     source.createRelation(testSqlContext, SaveMode.Overwrite, params, expectedDataDF)
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
@@ -339,10 +349,18 @@ class RedshiftSourceSuite
       "distkey" -> "testint")
 
     val expectedCommands = Seq(
-      "DROP TABLE IF EXISTS \"PUBLIC\"\\.\"test_table.*\"".r,
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
+      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
       ("CREATE TABLE IF NOT EXISTS \"PUBLIC\"\\.\"test_table.*" +
         " DISTSTYLE KEY DISTKEY \\(testint\\).*").r,
-      "COPY \"PUBLIC\"\\.\"test_table.*\"".r,
+      "COPY \"PUBLIC\".\"test_table_staging.*\"".r,
+      ("DELETE from \"PUBLIC\".\"test_table\" USING \"PUBLIC\".\"test_table_staging.*\" " +
+        "WHERE \"PUBLIC\".\"test_table\".\"teststring\" = " +
+        "\"PUBLIC\".\"test_table_staging.*\".\"teststring\"").r,
+      ("INSERT INTO \"PUBLIC\".\"test_table\"" +
+        " \\(SELECT \\* FROM \"PUBLIC\".\"test_table_staging.*\"\\)").r,
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
       "GRANT SELECT ON \"PUBLIC\"\\.\"test_table\" TO jeremy".r)
 
     val mockRedshift = new MockRedshift(
@@ -396,8 +414,10 @@ class RedshiftSourceSuite
 
     val expectedCommands = Seq(
       "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
+      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
       "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
-      "COPY \"PUBLIC\".\"test_table.*\"".r,
+      "COPY \"PUBLIC\".\"test_table_staging.*\"".r,
       ".*FROM stl_load_errors.*".r
     )
 
@@ -413,8 +433,16 @@ class RedshiftSourceSuite
 
   test("Append SaveMode doesn't destroy existing data") {
     val expectedCommands =
-      Seq("CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table\" .*".r,
-          "COPY \"PUBLIC\".\"test_table\" .*".r)
+      Seq("DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
+        "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
+        "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table\" .*".r,
+        "COPY \"PUBLIC\".\"test_table_staging.*\"".r,
+        ("DELETE from \"PUBLIC\".\"test_table\" USING \"PUBLIC\".\"test_table_staging.*\" " +
+          "WHERE \"PUBLIC\".\"test_table\".\"teststring\" = " +
+          "\"PUBLIC\".\"test_table_staging.*\".\"teststring\"").r,
+        ("INSERT INTO \"PUBLIC\".\"test_table\" " +
+          "\\(SELECT \\* FROM \"PUBLIC\".\"test_table_staging.*\"\\)").r,
+        "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r)
 
     val mockRedshift = new MockRedshift(
       defaultParams("url"),
@@ -444,11 +472,12 @@ class RedshiftSourceSuite
       StructField("default_str", StringType) ::
       Nil)
     val df = testSqlContext.createDataFrame(sc.emptyRDD[Row], schema)
+    val mergedParameters = MergedParameters.apply(defaultParams)
     val createTableCommand =
-      DefaultRedshiftWriter.createTableSql(df, MergedParameters.apply(defaultParams)).trim
+      DefaultRedshiftWriter.createTableSql(df, mergedParameters, mergedParameters.table.get).trim
     val expectedCreateTableCommand =
       """CREATE TABLE IF NOT EXISTS "PUBLIC"."test_table" ("long_str" VARCHAR(512),""" +
-        """ "short_str" VARCHAR(10), "default_str" TEXT)"""
+        """ "short_str" VARCHAR(10), "default_str" TEXT) PRIMARY KEY("teststring")"""
     assert(createTableCommand === expectedCreateTableCommand)
   }
 
@@ -461,11 +490,12 @@ class RedshiftSourceSuite
         StructField("default_str", StringType) ::
         Nil)
     val df = testSqlContext.createDataFrame(sc.emptyRDD[Row], schema)
+    val mergedParameters = MergedParameters.apply(defaultParams)
     val createTableCommand =
-      DefaultRedshiftWriter.createTableSql(df, MergedParameters.apply(defaultParams)).trim
+      DefaultRedshiftWriter.createTableSql(df, mergedParameters, mergedParameters.table.get).trim
     val expectedCreateTableCommand =
       """CREATE TABLE IF NOT EXISTS "PUBLIC"."test_table" ("lzo_str" TEXT  ENCODE LZO,""" +
-    """ "runlength_str" TEXT  ENCODE RUNLENGTH, "default_str" TEXT)"""
+    """ "runlength_str" TEXT  ENCODE RUNLENGTH, "default_str" TEXT) PRIMARY KEY("teststring")"""
     assert(createTableCommand === expectedCreateTableCommand)
   }
 
@@ -498,11 +528,12 @@ class RedshiftSourceSuite
       Nil)
 
     val df = testSqlContext.createDataFrame(sc.emptyRDD[Row], schema)
+    val mergedParameters = MergedParameters.apply(defaultParams)
     val createTableCommand =
-      DefaultRedshiftWriter.createTableSql(df, MergedParameters.apply(defaultParams)).trim
+      DefaultRedshiftWriter.createTableSql(df, mergedParameters, mergedParameters.table.get).trim
     val expectedCreateTableCommand =
       """CREATE TABLE IF NOT EXISTS "PUBLIC"."test_table" ("bpchar_str" BPCHAR(2),""" +
-        """ "bpchar_str" NVARCHAR(123), "default_str" TEXT)"""
+        """ "bpchar_str" NVARCHAR(123), "default_str" TEXT) PRIMARY KEY("teststring")"""
     assert(createTableCommand === expectedCreateTableCommand)
   }
 
