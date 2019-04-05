@@ -25,9 +25,13 @@ import org.scalatest.FunSuite
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.types._
 
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
+
 /**
  * Unit test for data type conversions
  */
+@RunWith(classOf[JUnitRunner])
 class ConversionsSuite extends FunSuite {
 
   private def createRowConverter(schema: StructType) = {

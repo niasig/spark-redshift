@@ -19,8 +19,11 @@ package com.databricks.spark.redshift
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.SparkConf
 import org.apache.spark.serializer.{JavaSerializer, KryoSerializer, SerializerInstance}
+import org.junit.runner.RunWith
 import org.scalatest.FunSuite
+import org.scalatest.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class SerializableConfigurationSuite extends FunSuite {
 
   private def testSerialization(serializer: SerializerInstance): Unit = {

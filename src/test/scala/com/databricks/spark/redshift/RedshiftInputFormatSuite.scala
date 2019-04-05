@@ -28,6 +28,10 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Row, SQLContext}
 
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
+
+@RunWith(classOf[JUnitRunner])
 class RedshiftInputFormatSuite extends FunSuite with BeforeAndAfterAll {
 
   import RedshiftInputFormatSuite._

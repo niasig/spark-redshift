@@ -18,9 +18,13 @@ package com.databricks.spark.redshift
 
 import org.scalatest.{FunSuite, Matchers}
 
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
+
 /**
  * Check validation of parameter config
  */
+@RunWith(classOf[JUnitRunner])
 class ParametersSuite extends FunSuite with Matchers {
 
   test("Minimal valid parameter map is accepted") {

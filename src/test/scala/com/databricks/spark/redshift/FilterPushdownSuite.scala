@@ -23,7 +23,10 @@ import org.apache.spark.sql.types._
 
 import com.databricks.spark.redshift.FilterPushdown._
 
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class FilterPushdownSuite extends FunSuite {
   test("buildWhereClause with empty list of filters") {
     assert(buildWhereClause(StructType(Nil), Seq.empty) === "")
@@ -91,5 +94,9 @@ class FilterPushdownSuite extends FunSuite {
     StructField("test_timestamp", TimestampType)))
 
   /** A new filter subclasss which our pushdown logic does not know how to handle */
-  private case object NewFilter extends Filter
+  private case object NewFilter extends Filter {
+    override def references: Array[String] = {
+      Array("test_bool", "test_string")
+    }
+  }
 }

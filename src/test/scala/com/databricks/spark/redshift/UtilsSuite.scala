@@ -20,9 +20,13 @@ import java.net.URI
 
 import org.scalatest.{FunSuite, Matchers}
 
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
+
 /**
  * Unit tests for helper functions
  */
+@RunWith(classOf[JUnitRunner])
 class UtilsSuite extends FunSuite with Matchers {
 
   test("joinUrls preserves protocol information") {

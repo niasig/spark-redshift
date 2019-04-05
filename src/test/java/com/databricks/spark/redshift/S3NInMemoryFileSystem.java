@@ -18,15 +18,12 @@
 
 package org.apache.hadoop.fs.s3native;
 
-import org.apache.hadoop.fs.s3native.NativeS3FileSystem;
-import org.apache.hadoop.fs.s3native.InMemoryNativeFileSystemStore;
-
 /**
  * A helper implementation of {@link NativeS3FileSystem}
  * without actually connecting to S3 for unit testing.
  */
 public class S3NInMemoryFileSystem extends NativeS3FileSystem {
   public S3NInMemoryFileSystem() {
-    super(new InMemoryNativeFileSystemStore());
+    super(new org.apache.hadoop.fs.s3native.InMemoryNativeFileSystemStore());
   }
 }

@@ -3,4 +3,9 @@ project/target
 .idea/
 .idea_modules/
 *.DS_Store
-build/*.jar
+build/*
+buildsrc/.gradle
+buildsrc/build
+buildsrc/mavenenc/build
+buildsrc/scalaproject/build
+/.gradle

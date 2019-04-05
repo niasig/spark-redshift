@@ -28,9 +28,11 @@ import org.mockito.Mockito
 import org.mockito.Mockito.when
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.fs.s3native.S3NInMemoryFileSystem
+import org.junit.runner.RunWith
 import org.mockito.invocation.InvocationOnMock
 import org.mockito.stubbing.Answer
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, Matchers}
+import org.scalatest.junit.JUnitRunner
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql._
@@ -42,6 +44,7 @@ import org.apache.spark.sql.catalyst.encoders.RowEncoder
 /**
  * Tests main DataFrame loading and writing functionality
  */
+@RunWith(classOf[JUnitRunner])
 class RedshiftSourceSuite
   extends QueryTest
   with Matchers
@@ -88,6 +91,7 @@ class RedshiftSourceSuite
     sc.hadoopConfiguration.set("fs.s3.awsSecretAccessKey", "test2")
     sc.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "test1")
     sc.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "test2")
+    sc.hadoopConfiguration.set("avro.mapred.ignore.inputs.without.extension", "true")
   }
 
   override def beforeEach(): Unit = {
@@ -457,7 +461,7 @@ class RedshiftSourceSuite
     // `tempdir` between every unit test, there should only be one directory here.
     assert(s3FileSystem.listStatus(new Path(s3TempDir)).length === 1)
     val dirWithAvroFiles = s3FileSystem.listStatus(new Path(s3TempDir)).head.getPath.toUri.toString
-    val written = testSqlContext.read.format("com.databricks.spark.avro").load(dirWithAvroFiles)
+    val written = testSqlContext.read.format("avro").load(dirWithAvroFiles)
     checkAnswer(written, TestUtils.expectedDataWithConvertedTimesAndDates)
     mockRedshift.verifyThatConnectionsWereClosed()
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
