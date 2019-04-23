@@ -71,8 +71,6 @@ class ParametersSuite extends FunSuite with Matchers {
     checkMerge(Map("dbtable" -> "test_table", "url" -> testURL), "tempdir")
     checkMerge(Map("tempdir" -> "s3://foo/bar", "url" -> testURL), "Redshift table name")
     checkMerge(Map("dbtable" -> "test_table", "tempdir" -> "s3://foo/bar"), "JDBC URL")
-    checkMerge(Map("dbtable" -> "test_table", "tempdir" -> "s3://foo/bar", "url" -> testURL),
-      "method for authenticating")
   }
 
   test("Must specify either 'dbtable' or 'query' parameter, but not both") {

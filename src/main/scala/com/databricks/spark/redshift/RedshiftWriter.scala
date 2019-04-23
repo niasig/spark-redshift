@@ -69,7 +69,8 @@ private[redshift] class RedshiftWriter(
   // Visible for testing.
   private[redshift] def createTableSql(data: DataFrame,
                                        params: MergedParameters,
-                                       table: TableName): String = {
+                                       table: TableName,
+                                       ifNotExists: Boolean): String = {
     val schemaSql = jdbcWrapper.schemaString(data.schema)
 
     val primaryKeyDef = params.primaryKey
@@ -86,7 +87,9 @@ private[redshift] class RedshiftWriter(
     }
     val sortKeyDef = params.sortKeySpec.getOrElse("")
 
-    s"CREATE TABLE $table ($schemaSql$primaryKeyDef) $distKeyDef $sortKeyDef"
+    val ifNotExistsDef = if (ifNotExists) " IF NOT EXISTS" else ""
+
+    s"CREATE TABLE$ifNotExistsDef $table ($schemaSql$primaryKeyDef) $distKeyDef $sortKeyDef"
   }
 
   private[redshift] def dropTableSql(table: TableName): String = {
@@ -157,12 +160,12 @@ private[redshift] class RedshiftWriter(
     jdbcWrapper.executeInterruptibly(conn.prepareStatement(dropStagingStatement))
 
     // If the table doesn't exist, we need to create it first, using JDBC to infer column types.
-    val createStagingStatement = createTableSql(data, params, params.stagingTable.get)
+    val createStagingStatement = createTableSql(data, params, params.stagingTable.get, ifNotExists = false)
     log.info(s"Creating staging table: $createStagingStatement")
     jdbcWrapper.executeInterruptibly(conn.prepareStatement(createStagingStatement))
 
     // Create prod table
-    val createProdStatement = createTableSql(data, params, params.table.get)
+    val createProdStatement = createTableSql(data, params, params.table.get, ifNotExists = true)
     log.info(s"Creating prod table: $createProdStatement")
     jdbcWrapper.executeInterruptibly(conn.prepareStatement(createProdStatement))
 
@@ -334,7 +337,7 @@ private[redshift] class RedshiftWriter(
     val writer = sqlContext.createDataFrame(convertedRows, convertedSchema).write
     (tempFormat match {
       case "AVRO" =>
-        writer.format("org.apache.spark.sql.avro")
+        writer.format("com.databricks.spark.avro")
       case "CSV" =>
         writer.format("csv")
           .option("escape", "\"")
