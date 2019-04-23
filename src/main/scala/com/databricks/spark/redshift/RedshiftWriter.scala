@@ -73,7 +73,7 @@ private[redshift] class RedshiftWriter(
     val schemaSql = jdbcWrapper.schemaString(data.schema)
 
     val primaryKeyDef = params.primaryKey
-      .map(primaryKey => s"PRIMARY KEY($primaryKey)")
+      .map(primaryKey => s", PRIMARY KEY($primaryKey)")
       .getOrElse("")
 
     val distStyleDef = params.distStyle match {
@@ -85,8 +85,8 @@ private[redshift] class RedshiftWriter(
       case None => ""
     }
     val sortKeyDef = params.sortKeySpec.getOrElse("")
-    s"CREATE TABLE IF NOT EXISTS $table ($schemaSql) " +
-      s"$primaryKeyDef $distStyleDef $distKeyDef $sortKeyDef "
+
+    s"CREATE TABLE $table ($schemaSql$primaryKeyDef) $distKeyDef $sortKeyDef"
   }
 
   private[redshift] def dropTableSql(table: TableName): String = {
@@ -153,16 +153,17 @@ private[redshift] class RedshiftWriter(
 
     // Create staging table. (Need to do a drop table before too)
     val dropStagingStatement = dropTableSql(params.stagingTable.get)
+    log.info(s"Dropping existing staging table: $dropStagingStatement")
     jdbcWrapper.executeInterruptibly(conn.prepareStatement(dropStagingStatement))
 
     // If the table doesn't exist, we need to create it first, using JDBC to infer column types.
     val createStagingStatement = createTableSql(data, params, params.stagingTable.get)
-    log.info(createStagingStatement)
+    log.info(s"Creating staging table: $createStagingStatement")
     jdbcWrapper.executeInterruptibly(conn.prepareStatement(createStagingStatement))
 
     // Create prod table
     val createProdStatement = createTableSql(data, params, params.table.get)
-    log.info(createProdStatement)
+    log.info(s"Creating prod table: $createProdStatement")
     jdbcWrapper.executeInterruptibly(conn.prepareStatement(createProdStatement))
 
     val preActions = commentActions(params.description, data.schema) ++ params.preActions
@@ -170,28 +171,29 @@ private[redshift] class RedshiftWriter(
     // Execute preActions
     preActions.foreach { action =>
       val actionSql = if (action.contains("%s")) action.format(params.table.get) else action
-      log.info("Executing preAction: " + actionSql)
+      log.info(s"Executing preAction: $actionSql")
       jdbcWrapper.executeInterruptibly(conn.prepareStatement(actionSql))
     }
 
     manifestUrl.foreach { manifestUrl =>
       // Load the temporary data into the new file
       val copyToStagingStatement = copySql(data.sqlContext, params, params.stagingTable.get, creds, manifestUrl)
-      log.info(copyToStagingStatement)
+      log.info(s"Copying data to staging table: $copyToStagingStatement")
 
       try {
         jdbcWrapper.executeInterruptibly(conn.prepareStatement(copyToStagingStatement))
 
         val deleteExistingRowsStatement = deleteExistingSql(params)
-        log.info(deleteExistingRowsStatement)
+        log.info(s"Deleting existing rows in prod table: $deleteExistingRowsStatement")
         jdbcWrapper.executeInterruptibly(conn.prepareStatement(deleteExistingRowsStatement))
 
 
         val insertNewRowsStatement = insertSql(params)
-        log.info(insertNewRowsStatement)
+        log.info(s"Upserting new rows into prod table: $insertNewRowsStatement")
         jdbcWrapper.executeInterruptibly(conn.prepareStatement(insertNewRowsStatement))
 
         val dropStagingStatement = dropTableSql(params.stagingTable.get)
+        log.info(s"Dropping staging table: $dropStagingStatement")
         jdbcWrapper.executeInterruptibly(conn.prepareStatement(dropStagingStatement))
 
       } catch {
@@ -332,7 +334,7 @@ private[redshift] class RedshiftWriter(
     val writer = sqlContext.createDataFrame(convertedRows, convertedSchema).write
     (tempFormat match {
       case "AVRO" =>
-        writer.format("com.databricks.spark.avro")
+        writer.format("org.apache.spark.sql.avro")
       case "CSV" =>
         writer.format("csv")
           .option("escape", "\"")
@@ -436,7 +438,7 @@ private[redshift] class RedshiftWriter(
     Utils.assertThatFileSystemIsNotS3BlockFileSystem(
       new URI(params.rootTempDir), sqlContext.sparkContext.hadoopConfiguration)
 
-    Utils.checkThatBucketHasObjectLifecycleConfiguration(params.rootTempDir, s3ClientFactory(creds))
+    //Utils.checkThatBucketHasObjectLifecycleConfiguration(params.rootTempDir, s3ClientFactory(creds))
 
     // Save the table's rows to S3:
     val manifestUrl = unloadData(

@@ -33,7 +33,7 @@ private[redshift] object Parameters {
     // * distkey has no default, but is optional unless using diststyle KEY
     // * jdbcdriver has no default, but is optional
 
-    "forward_spark_s3_credentials" -> "false",
+    "forward_spark_s3_credentials" -> "true",
     "tempformat" -> "AVRO",
     "csvnullstring" -> "@NULL@",
     "overwrite" -> "false",
@@ -149,7 +149,7 @@ private[redshift] object Parameters {
       if (dbtable.startsWith("(") && dbtable.endsWith(")")) {
         None
       } else {
-        Some(TableName.parseFromEscaped(s"${dbtable}_staging_${Instant.now.getEpochSecond}"))
+        Some(TableName.parseFromEscaped(s"${dbtable}_staging"))
       }
     }
 
