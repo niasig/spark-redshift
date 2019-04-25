@@ -76,6 +76,8 @@ project.ext['libs'] = [
         'scala-java8-compat'  : 'org.scala-lang.modules:scala-java8-compat_2.11:0.8.0',
     ]
 
+project.ext.build_date = new Date().format('yyyyMMddHHmmss')
+
 apply plugin: 'scalaproject'
 
 dependencies {
@@ -110,8 +112,10 @@ dependencies {
     testCompile 'junit:junit:4.12'
 }
 
+def defaultSnapshotVersion = project.ext.build_date + '-' + System.getenv('USER') + '-SNAPSHOT'
+def snapshotVersion = project.hasProperty('snapshotVersion') ? "${project.snapshotVersion}" : defaultSnapshotVersion
 def buildNumber = System.getenv("BUILD_NUMBER")
-def publicationVersion = "CI-" + buildNumber
+def publicationVersion = buildNumber != null && !buildNumber.isEmpty() ? 'CI-' + buildNumber : snapshotVersion
 
 publishing {
     publications {
@@ -127,8 +131,7 @@ publishing {
 
     repositories {
         maven {
-            url = nexus_releases_url
-            name = "signifyd-releases"
+            url = publicationVersion.endsWith('SNAPSHOT') ? nexus_snapshots_url : nexus_releases_url
             credentials {
                 username "$nexusUsername"
                 password "$nexusPassword"

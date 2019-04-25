@@ -34,7 +34,7 @@ private[redshift] object Parameters {
     // * jdbcdriver has no default, but is optional
 
     "forward_spark_s3_credentials" -> "true",
-    "tempformat" -> "AVRO",
+    "tempformat" -> "CSV",
     "csvnullstring" -> "@NULL@",
     "overwrite" -> "false",
     "diststyle" -> "EVEN",

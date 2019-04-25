@@ -254,7 +254,7 @@ private[redshift] class JDBCWrapper {
             if (field.metadata.contains("maxlength")) {
               s"VARCHAR(${field.metadata.getLong("maxlength")})"
             } else {
-              "TEXT"
+              "VARCHAR(max)"
             }
           case TimestampType => "TIMESTAMP"
           case DateType => "DATE"

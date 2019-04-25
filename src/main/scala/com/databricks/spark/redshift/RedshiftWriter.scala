@@ -339,7 +339,7 @@ private[redshift] class RedshiftWriter(
       case "AVRO" =>
         writer.format("com.databricks.spark.avro")
       case "CSV" =>
-        writer.format("csv")
+        writer.format("com.databricks.spark.csv")
           .option("escape", "\"")
           .option("nullValue", nullString)
       case "CSV GZIP" =>
