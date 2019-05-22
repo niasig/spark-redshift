@@ -63,9 +63,6 @@ private[redshift] class RedshiftWriter(
 
   private val log = LoggerFactory.getLogger(getClass)
 
-  /**
-   * Generate CREATE TABLE statement for Redshift
-   */
   // Visible for testing.
   private[redshift] def createTableSql(data: DataFrame,
                                        params: MergedParameters,
@@ -110,17 +107,15 @@ private[redshift] class RedshiftWriter(
     val table = params.table.get
     val stagingTable = params.stagingTable.get
     val selectAllStaging = s"(SELECT * FROM $stagingTable)"
+
     s"INSERT INTO $table $selectAllStaging"
   }
-  /**
-   * Generate the COPY SQL command
-   */
-  private def copySql(
-      sqlContext: SQLContext,
-      params: MergedParameters,
-      table: TableName,
-      creds: AWSCredentialsProvider,
-      manifestUrl: String): String = {
+
+  private[redshift] def copySql(sqlContext: SQLContext,
+                      params: MergedParameters,
+                      table: TableName,
+                      creds: AWSCredentialsProvider,
+                      manifestUrl: String): String = {
     val credsString: String =
       AWSCredentialsUtils.getRedshiftCredentialsString(params, creds.getCredentials)
     val fixedUrl = Utils.fixS3Url(manifestUrl)
@@ -144,114 +139,190 @@ private[redshift] class RedshiftWriter(
               + s" IS '${f.metadata.getString("description").replace("'", "''")}'")
   }
 
-  /**
-   * Perform the Redshift load by issuing a COPY statement.
-   */
-  private def doRedshiftLoad(
-      conn: Connection,
-      data: DataFrame,
-      params: MergedParameters,
-      creds: AWSCredentialsProvider,
-      manifestUrl: Option[String]): Unit = {
-
-    // Create staging table. (Need to do a drop table before too)
-    val dropStagingStatement = dropTableSql(params.stagingTable.get)
-    log.info(s"Dropping existing staging table: $dropStagingStatement")
-    jdbcWrapper.executeInterruptibly(conn.prepareStatement(dropStagingStatement))
-
-    // If the table doesn't exist, we need to create it first, using JDBC to infer column types.
-    val createStagingStatement = createTableSql(data, params, params.stagingTable.get, ifNotExists = false)
-    log.info(s"Creating staging table: $createStagingStatement")
-    jdbcWrapper.executeInterruptibly(conn.prepareStatement(createStagingStatement))
-
-    // Create prod table
-    val createProdStatement = createTableSql(data, params, params.table.get, ifNotExists = true)
-    log.info(s"Creating prod table: $createProdStatement")
-    jdbcWrapper.executeInterruptibly(conn.prepareStatement(createProdStatement))
-
+  private def executePreActions(conn: Connection,
+                                params: MergedParameters,
+                                data: DataFrame): Unit = {
     val preActions = commentActions(params.description, data.schema) ++ params.preActions
-
-    // Execute preActions
     preActions.foreach { action =>
       val actionSql = if (action.contains("%s")) action.format(params.table.get) else action
       log.info(s"Executing preAction: $actionSql")
-      jdbcWrapper.executeInterruptibly(conn.prepareStatement(actionSql))
+      executeSqlStatement(conn, actionSql)
     }
+  }
 
-    manifestUrl.foreach { manifestUrl =>
-      // Load the temporary data into the new file
-      val copyToStagingStatement = copySql(data.sqlContext, params, params.stagingTable.get, creds, manifestUrl)
-      log.info(s"Copying data to staging table: $copyToStagingStatement")
-
-      try {
-        jdbcWrapper.executeInterruptibly(conn.prepareStatement(copyToStagingStatement))
-
-        val deleteExistingRowsStatement = deleteExistingSql(params)
-        log.info(s"Deleting existing rows in prod table: $deleteExistingRowsStatement")
-        jdbcWrapper.executeInterruptibly(conn.prepareStatement(deleteExistingRowsStatement))
-
-
-        val insertNewRowsStatement = insertSql(params)
-        log.info(s"Upserting new rows into prod table: $insertNewRowsStatement")
-        jdbcWrapper.executeInterruptibly(conn.prepareStatement(insertNewRowsStatement))
-
-        val dropStagingStatement = dropTableSql(params.stagingTable.get)
-        log.info(s"Dropping staging table: $dropStagingStatement")
-        jdbcWrapper.executeInterruptibly(conn.prepareStatement(dropStagingStatement))
-
-      } catch {
-        case e: SQLException =>
-          log.error("SQLException thrown while running COPY query; will attempt to retrieve " +
-            "more information by querying the STL_LOAD_ERRORS table", e)
-          // Try to query Redshift's STL_LOAD_ERRORS table to figure out why the load failed.
-          // See http://docs.aws.amazon.com/redshift/latest/dg/r_STL_LOAD_ERRORS.html for details.
-          conn.rollback()
-          val errorLookupQuery =
-            """
-              | SELECT *
-              | FROM stl_load_errors
-              | WHERE query = pg_last_query_id()
-            """.stripMargin
-          val detailedException: Option[SQLException] = try {
-            val results =
-              jdbcWrapper.executeQueryInterruptibly(conn.prepareStatement(errorLookupQuery))
-            if (results.next()) {
-              val errCode = results.getInt("err_code")
-              val errReason = results.getString("err_reason").trim
-              val columnLength: String =
-                Option(results.getString("col_length"))
-                  .map(_.trim)
-                  .filter(_.nonEmpty)
-                  .map(n => s"($n)")
-                  .getOrElse("")
-              val exceptionMessage =
-                s"""
-                   |Error (code $errCode) while loading data into Redshift: "$errReason"
-                   |Table name: ${params.table.get}
-                   |Column name: ${results.getString("colname").trim}
-                   |Column type: ${results.getString("type").trim}$columnLength
-                   |Raw line: ${results.getString("raw_line")}
-                   |Raw field value: ${results.getString("raw_field_value")}
-                  """.stripMargin
-              Some(new SQLException(exceptionMessage, e))
-            } else {
-              None
-            }
-          } catch {
-            case NonFatal(e2) =>
-              log.error("Error occurred while querying STL_LOAD_ERRORS", e2)
-              None
-          }
-          throw detailedException.getOrElse(e)
-      }
-    }
-
-    // Execute postActions
+  private def executePostActions(conn: Connection,
+                                 params: MergedParameters): Unit = {
     params.postActions.foreach { action =>
       val actionSql = if (action.contains("%s")) action.format(params.table.get) else action
       log.info("Executing postAction: " + actionSql)
-      jdbcWrapper.executeInterruptibly(conn.prepareStatement(actionSql))
+      executeSqlStatement(conn, actionSql)}
+  }
+
+  private def executeSqlStatement(conn: Connection, sql: String): Unit = {
+    jdbcWrapper.executeInterruptibly(conn.prepareStatement(sql))
+  }
+
+  private def logSqlStatement(msg: String, statement: String): Unit = {
+    log.info(s"$msg\n \t> $statement")
+  }
+
+  /**
+    * Overwrite the data in a prod redshift table with new data by:
+    * 1) Dropping the existing prod table;
+    * 2) Creating a new prod table
+    * 3) Using a LOAD command to copy the temp data in s3 into the new prod table.
+    */
+  private def doRedshiftOverwrite(conn: Connection,
+                                  data: DataFrame,
+                                  params: MergedParameters,
+                                  creds: AWSCredentialsProvider,
+                                  manifestUrlOpt: Option[String]): Unit = {
+    executePreActions(conn, params, data)
+
+    // Drop the existing prod table.
+    val dropProdStatement = dropTableSql(params.table.get)
+    logSqlStatement(s"Dropping existing prod table ${params.table.get}", dropProdStatement)
+    executeSqlStatement(conn, dropProdStatement)
+
+    // Create a new prod table.
+    val createProdStatement = createTableSql(data, params, params.table.get, ifNotExists = false)
+    logSqlStatement(s"Creating prod table ${params.table.get}", createProdStatement)
+    executeSqlStatement(conn, createProdStatement)
+
+    manifestUrlOpt.foreach { manifestUrl =>
+      try {
+        // Copy data from s3 to the new prod table.
+        val copyToProdStatement = copySql(data.sqlContext,
+                                          params,
+                                          params.table.get,
+                                          creds,
+                                          manifestUrl)
+        logSqlStatement(s"Copying data from s3 to prod table ${params.table.get}",
+                        copyToProdStatement)
+        executeSqlStatement(conn, copyToProdStatement)
+      } catch {
+        case e: SQLException =>
+          handleLoadException(conn, e, params)
+      }
     }
+
+    executePostActions(conn, params)
+  }
+
+  /**
+   * Load new data into a prod redshift table by:
+   * 1) Creating a staging table in redshift.
+   * 2) Using a LOAD command to copy the temp data in s3 into the staging table.
+   * 3) Deleting rows in the prod table that are in the staging table.
+   * 4) Inserting all rows from the staging table into the prod table.
+   * 5) Deleting the staging table
+   */
+  private def doRedshiftLoad(conn: Connection,
+                             data: DataFrame,
+                             params: MergedParameters,
+                             creds: AWSCredentialsProvider,
+                             manifestUrl: Option[String]): Unit = {
+    executePreActions(conn, params, data)
+
+    // Create the staging redshift table. Drop previously existing staging table first.
+    val dropStagingStatement = dropTableSql(params.stagingTable.get)
+    logSqlStatement(s"Dropping existing staging table ${params.stagingTable.get}",
+                    dropStagingStatement)
+    executeSqlStatement(conn, dropStagingStatement)
+
+    val createStagingStatement = createTableSql(data,
+                                                params,
+                                                params.stagingTable.get,
+                                                ifNotExists = false)
+    logSqlStatement(s"Creating staging table ${params.stagingTable.get}", createStagingStatement)
+    executeSqlStatement(conn, createStagingStatement)
+
+    // Create the prod redshift table if it doesn't exist already.
+    val createProdStatement = createTableSql(data, params, params.table.get, ifNotExists = true)
+    logSqlStatement(s"Creating table ${params.table.get}", createProdStatement)
+    executeSqlStatement(conn, createProdStatement)
+
+    manifestUrl.foreach { manifestUrl =>
+      try {
+        // Copy from s3 to the staging table.
+        val copyToStagingStatement = copySql(data.sqlContext,
+                                             params,
+                                             params.stagingTable.get,
+                                             creds,
+                                             manifestUrl)
+        logSqlStatement(s"Copying data to ${params.stagingTable.get}", copyToStagingStatement)
+        executeSqlStatement(conn, copyToStagingStatement)
+
+        // Upsert rows from the staging table into the prod table.
+        val deleteExistingRowsStatement = deleteExistingSql(params)
+        logSqlStatement(s"Deleting existing rows in ${params.table.get}",
+                        deleteExistingRowsStatement)
+        executeSqlStatement(conn, deleteExistingRowsStatement)
+
+        val insertNewRowsStatement = insertSql(params)
+        logSqlStatement(s"Inserting new rows into ${params.table.get}", insertNewRowsStatement)
+        executeSqlStatement(conn, insertNewRowsStatement)
+
+        // Drop staging table.
+        val dropStagingStatement = dropTableSql(params.stagingTable.get)
+        logSqlStatement(s"Dropping table ${params.stagingTable.get}", dropStagingStatement)
+        executeSqlStatement(conn, dropStagingStatement)
+
+      } catch {
+        case e: SQLException =>
+          handleLoadException(conn, e, params)
+      }
+    }
+
+    executePostActions(conn, params)
+  }
+
+  private def handleLoadException(conn: Connection,
+                                  e: Exception,
+                                  params: MergedParameters): Unit = {
+    conn.rollback()
+
+    // Try to query Redshift's STL_LOAD_ERRORS table to figure out why the load failed.
+    // See http://docs.aws.amazon.com/redshift/latest/dg/r_STL_LOAD_ERRORS.html for details.
+    log.error("SQLException thrown while running COPY query; will attempt to retrieve " +
+              "more information by querying the STL_LOAD_ERRORS table", e)
+    val errorLookupQuery =
+      """
+        | SELECT *
+        | FROM stl_load_errors
+        | WHERE query = pg_last_query_id()
+      """.stripMargin
+    val detailedException: Option[SQLException] = try {
+      val results =
+        jdbcWrapper.executeQueryInterruptibly(conn.prepareStatement(errorLookupQuery))
+      if (results.next()) {
+        val errCode = results.getInt("err_code")
+        val errReason = results.getString("err_reason").trim
+        val columnLength: String =
+          Option(results.getString("col_length"))
+          .map(_.trim)
+          .filter(_.nonEmpty)
+          .map(n => s"($n)")
+          .getOrElse("")
+        val exceptionMessage =
+          s"""
+             |Error (code $errCode) while loading data into Redshift: "$errReason"
+             |Table name: ${params.table.get}
+             |Column name: ${results.getString("colname").trim}
+             |Column type: ${results.getString("type").trim}$columnLength
+             |Raw line: ${results.getString("raw_line")}
+             |Raw field value: ${results.getString("raw_field_value")}
+                  """.stripMargin
+        Some(new SQLException(exceptionMessage, e))
+      } else {
+        None
+      }
+    } catch {
+      case NonFatal(e2) =>
+        log.error("Error occurred while querying STL_LOAD_ERRORS", e2)
+        None
+    }
+    throw detailedException.getOrElse(e)
   }
 
   /**
@@ -397,12 +468,6 @@ private[redshift] class RedshiftWriter(
         "For save operations you must specify a Redshift table name with the 'dbtable' parameter")
     }
 
-    if (!params.useStagingTable) {
-      log.warn("Setting useStagingTable=false is deprecated; instead, we recommend that you " +
-        "drop the target table yourself. For more details on this deprecation, see" +
-        "https://github.com/databricks/spark-redshift/pull/157")
-    }
-
     val creds: AWSCredentialsProvider =
       AWSCredentialsUtils.load(params, sqlContext.sparkContext.hadoopConfiguration)
 
@@ -455,18 +520,14 @@ private[redshift] class RedshiftWriter(
     try {
       val table: TableName = params.table.get
       if (saveMode == SaveMode.Overwrite) {
-        // Overwrites must drop the table in case there has been a schema update
-        jdbcWrapper.executeInterruptibly(conn.prepareStatement(s"DROP TABLE IF EXISTS $table;"))
-        if (!params.useStagingTable) {
-          // If we're not using a staging table, commit now so that Redshift doesn't have to
-          // maintain a snapshot of the old table during the COPY; this sacrifices atomicity for
-          // performance.
-          conn.commit()
-        }
+        log.info(s"Overwriting data in $table")
+        doRedshiftOverwrite(conn, data, params, creds, manifestUrl)
+      } else {
+        log.info(s"Loading new data into $table")
+        doRedshiftLoad(conn, data, params, creds, manifestUrl)
       }
-      log.info(s"Loading new Redshift data to: $table")
-      doRedshiftLoad(conn, data, params, creds, manifestUrl)
       conn.commit()
+
     } catch {
       case NonFatal(e) =>
         try {

@@ -325,13 +325,12 @@ class RedshiftSourceSuite
       "usestagingtable" -> "true")
 
     val expectedCommands = Seq(
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
-      "CREATE TABLE \"PUBLIC\".\"test_table_staging.*\"".r,
-      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
       "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id < 100".r,
       "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id > 100".r,
       "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id = -1".r,
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
+      "CREATE TABLE \"PUBLIC\".\"test_table_staging.*\"".r,
+      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
       "COPY \"PUBLIC\".\"test_table_staging.*\"".r,
       ("DELETE from \"PUBLIC\".\"test_table\" USING \"PUBLIC\".\"test_table_staging.*\"" +
         " WHERE \"PUBLIC\".\"test_table\".\"teststring\" =" +
@@ -341,30 +340,22 @@ class RedshiftSourceSuite
       "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r)
 
 
-    source.createRelation(testSqlContext, SaveMode.Overwrite, params, expectedDataDF)
+    source.createRelation(testSqlContext, SaveMode.Append, params, expectedDataDF)
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
     mockRedshift.verifyThatConnectionsWereClosed()
   }
 
-    /*
   test("DefaultSource serializes data as Avro, then sends Redshift COPY command") {
     val params = defaultParams ++ Map(
       "postactions" -> "GRANT SELECT ON %s TO jeremy",
       "diststyle" -> "KEY",
-      "distkey" -> "testint")
+      "distkey" -> "testint",
+      "tempformat" -> "AVRO")
 
     val expectedCommands = Seq(
       "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
-      "CREATE TABLE \"PUBLIC\".\"test_table_staging.*\"".r,
-      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
-      "COPY \"PUBLIC\".\"test_table_staging.*\"".r,
-      ("DELETE from \"PUBLIC\".\"test_table\" USING \"PUBLIC\".\"test_table_staging.*\" " +
-        "WHERE \"PUBLIC\".\"test_table\".\"teststring\" = " +
-        "\"PUBLIC\".\"test_table_staging.*\".\"teststring\"").r,
-      ("INSERT INTO \"PUBLIC\".\"test_table\"" +
-        " \\(SELECT \\* FROM \"PUBLIC\".\"test_table_staging.*\"\\)").r,
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
+      "CREATE TABLE \"PUBLIC\".\"test_table.*\"".r,
+      "COPY \"PUBLIC\".\"test_table.*\"".r,
       "GRANT SELECT ON \"PUBLIC\"\\.\"test_table\" TO jeremy".r)
 
     val mockRedshift = new MockRedshift(
@@ -388,7 +379,6 @@ class RedshiftSourceSuite
     mockRedshift.verifyThatConnectionsWereClosed()
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
   }
-  */
 
   test("Cannot write table with column names that become ambiguous under case insensitivity") {
     val mockRedshift = new MockRedshift(
@@ -418,7 +408,6 @@ class RedshiftSourceSuite
       jdbcQueriesThatShouldFail = Seq("COPY \"PUBLIC\".\"test_table.*\"".r))
 
     val expectedCommands = Seq(
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
       "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
       "CREATE TABLE \"PUBLIC\".\"test_table_staging.*\"".r,
       "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
@@ -428,7 +417,7 @@ class RedshiftSourceSuite
 
     val source = new DefaultSource(mockRedshift.jdbcWrapper, _ => mockS3Client)
     intercept[Exception] {
-      source.createRelation(testSqlContext, SaveMode.Overwrite, params, expectedDataDF)
+      source.createRelation(testSqlContext, SaveMode.Append, params, expectedDataDF)
     }
     mockRedshift.verifyThatConnectionsWereClosed()
     mockRedshift.verifyThatCommitWasNotCalled()
@@ -436,8 +425,27 @@ class RedshiftSourceSuite
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
   }
 
-    /*
+  test("Overwrite doesn't use staging tables") {
+    val mockRedshift = new MockRedshift(
+      defaultParams("url"),
+      Map(TableName.parseFromEscaped("test_table").toString -> TestUtils.testSchema))
+      val source = new DefaultSource(mockRedshift.jdbcWrapper, _ => mockS3Client)
+      val params = defaultParams
+
+      val expectedCommands = Seq(
+        "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
+        "CREATE TABLE \"PUBLIC\".\"test_table.*\"".r,
+        "COPY \"PUBLIC\".\"test_table.*\"".r)
+
+      source.createRelation(testSqlContext, SaveMode.Overwrite, params, expectedDataDF)
+      mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
+      mockRedshift.verifyThatConnectionsWereClosed()
+  }
+
+
   test("Append SaveMode doesn't destroy existing data") {
+    val params = defaultParams ++ Map("tempformat" -> "AVRO")
+
     val expectedCommands =
       Seq("DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging.*\"".r,
         "CREATE TABLE \"PUBLIC\".\"test_table_staging.*\" ".r,
@@ -452,10 +460,10 @@ class RedshiftSourceSuite
 
     val mockRedshift = new MockRedshift(
       defaultParams("url"),
-      Map(TableName.parseFromEscaped(defaultParams("dbtable")).toString -> null))
+      Map(TableName.parseFromEscaped(params("dbtable")).toString -> null))
 
     val source = new DefaultSource(mockRedshift.jdbcWrapper, _ => mockS3Client)
-    source.createRelation(testSqlContext, SaveMode.Append, defaultParams, expectedDataDF)
+    source.createRelation(testSqlContext, SaveMode.Append, params, expectedDataDF)
 
     // This test is "appending" to an empty table, so we expect all our test data to be
     // the only content in the returned data frame.
@@ -463,12 +471,12 @@ class RedshiftSourceSuite
     // `tempdir` between every unit test, there should only be one directory here.
     assert(s3FileSystem.listStatus(new Path(s3TempDir)).length === 1)
     val dirWithAvroFiles = s3FileSystem.listStatus(new Path(s3TempDir)).head.getPath.toUri.toString
-    val written = testSqlContext.read.format("avro").load(dirWithAvroFiles)
+    val written = testSqlContext.read.format("com.databricks.spark.avro").load(dirWithAvroFiles)
     checkAnswer(written, TestUtils.expectedDataWithConvertedTimesAndDates)
     mockRedshift.verifyThatConnectionsWereClosed()
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
   }
-  */
+
 
   test("configuring maxlength on string columns") {
     val longStrMetadata = new MetadataBuilder().putLong("maxlength", 512).build()
